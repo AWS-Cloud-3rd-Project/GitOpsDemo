@@ -16,4 +16,4 @@ spec:
               service:
                 name: {{ include "myapp.fullname" . }}
                 port:
-                  number: 80
+                  number: 8080
