@@ -9,9 +9,9 @@ imagePullSecrets:
   - name: ecr-secret
 
 service:
-  type: NodePort
+  type: ClusterIP
   port: 8080
-  nodePort: 30007  # 선택한 노드 포트 번호
+  # nodePort: 30007  # 선택한 노드 포트 번호
 
 resources: {}
 
