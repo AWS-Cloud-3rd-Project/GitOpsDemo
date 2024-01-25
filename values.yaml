@@ -10,7 +10,7 @@ imagePullSecrets:
 
 service:
   type: NodePort
-  port: 80
+  port: 8080
   nodePort: 30007  # 선택한 노드 포트 번호
 
 resources: {}
