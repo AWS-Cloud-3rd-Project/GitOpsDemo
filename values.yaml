@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: 009946608368.dkr.ecr.ap-northeast-2.amazonaws.com/awsmarket
-  tag: 2024-01-26T14-30-05
+  tag: 2024-01-26T14-37-21
   pullPolicy: IfNotPresent
 
 imagePullSecrets:
