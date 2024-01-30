@@ -375,7 +375,7 @@ resource "aws_iam_policy" "cluster_encryption" {
           "kms:DescribeKey",
         ]
         Effect   = "Allow"
-        Resource = var.create_kms_key ? module.kms.key_arn : var.cluster_encryption_config.provider_key_arn
+        Resource = "*" #var.create_kms_key ? module.kms.key_arn : var.cluster_encryption_config.provider_key_arn
       },
     ]
   })

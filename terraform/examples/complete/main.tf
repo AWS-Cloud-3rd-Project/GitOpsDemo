@@ -138,6 +138,9 @@ module "eks" {
       source_security_group_id = aws_security_group.additional.id
     }
   }
+  eks_managed_node_group_defaults = {
+    ami_type = "AL2_x86_64"
+  }
   eks_managed_node_groups = {
     service_node_group = {
       name = "service-node-group"
@@ -154,7 +157,42 @@ module "eks" {
       tags = {
         ExtraTag = "example"
       }
-  }
+    }
+    eco_system_node_group = {
+      name = "eco_system_node_group"
+
+      instance_types = ["t3.medium"]
+      capacity_type  = "ON_DEMAND"
+
+
+
+      min_size     = 1
+      max_size     = 1
+      desired_size = 1
+      # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
+      subnet_ids = [for i in range(length(local.azs)) : module.vpc.private_subnets[i]]
+
+      tags = {
+        ExtraTag = "example"
+      }
+    }
+    
+    # search_node_group = {
+    #   name = "search_node_group"
+
+    #   instance_types = ["t3.medium"]
+    #   capacity_type  = "ON_DEMAND"
+
+    #   min_size     = 1
+    #   max_size     = 1
+    #   desired_size = 1
+    #   # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
+    #   subnet_ids = [aws_subnet.rds_subnet_2.id]
+
+    #   tags = {
+    #     ExtraTag = "example"
+    #   }
+    # }
   }
 
   # Create a new cluster where both an identity provider and Fargate profile is created
@@ -223,44 +261,44 @@ module "vpc" {
   tags = local.tags
 }
 
-# resource "aws_subnet" "rds_subnet_1" {
-#   vpc_id            = module.vpc.vpc_id
-#   cidr_block        = "10.0.100.0/24"  # Start from a higher range
-#   availability_zone = local.azs[0]
-#   tags = {
-#     Name = "${local.name}-rds-1"
-#   }
-# }
+resource "aws_subnet" "rds_subnet_1" {
+  vpc_id            = module.vpc.vpc_id
+  cidr_block        = "10.0.100.0/24"  # Start from a higher range
+  availability_zone = local.azs[0]
+  tags = {
+    Name = "${local.name}-rds-1"
+  }
+}
 
-# resource "aws_subnet" "rds_subnet_2" {
-#   vpc_id            = module.vpc.vpc_id
-#   cidr_block        = "10.0.101.0/24"  # Ensure there's no overlap
-#   availability_zone = local.azs[1]
-#   tags = {
-#     Name = "${local.name}-rds-2"
-#   }
-# }
+resource "aws_subnet" "rds_subnet_2" {
+  vpc_id            = module.vpc.vpc_id
+  cidr_block        = "10.0.101.0/24"  # Ensure there's no overlap
+  availability_zone = local.azs[1]
+  tags = {
+    Name = "${local.name}-rds-2"
+  }
+}
 
 
-# # DB 서브넷 그룹 생성
-# resource "aws_db_subnet_group" "rds_subnet_group" {
-#   name        = "ecommerce-seoul-mariadb-subnet-group"
-#   subnet_ids  = [aws_subnet.rds_subnet_1.id, aws_subnet.rds_subnet_2.id]
-#   tags = {
-#     Name = "My_DB_Subnet_Group"
-#   }
-# }
+# DB 서브넷 그룹 생성
+resource "aws_db_subnet_group" "rds_subnet_group" {
+  name        = "ecommerce-seoul-mariadb-subnet-group"
+  subnet_ids  = [aws_subnet.rds_subnet_1.id, aws_subnet.rds_subnet_2.id]
+  tags = {
+    Name = "My_DB_Subnet_Group"
+  }
+}
 
-# # Assuming the VPC module outputs the ID of a single private routing table
-# resource "aws_route_table_association" "rds_subnet_1_association" {
-#   subnet_id      = aws_subnet.rds_subnet_1.id
-#   route_table_id = module.vpc.private_route_table_ids[0]
-# }
+# Assuming the VPC module outputs the ID of a single private routing table
+resource "aws_route_table_association" "rds_subnet_1_association" {
+  subnet_id      = aws_subnet.rds_subnet_1.id
+  route_table_id = module.vpc.private_route_table_ids[0]
+}
 
-# resource "aws_route_table_association" "rds_subnet_2_association" {
-#   subnet_id      = aws_subnet.rds_subnet_2.id
-#   route_table_id = module.vpc.private_route_table_ids[0] # Using the same routing table as above
-# }
+resource "aws_route_table_association" "rds_subnet_2_association" {
+  subnet_id      = aws_subnet.rds_subnet_2.id
+  route_table_id = module.vpc.private_route_table_ids[0] # Using the same routing table as above
+}
 
 
 
@@ -298,30 +336,30 @@ resource "aws_security_group" "additional" {
 
   tags = merge(local.tags, { Name = "${local.name}-additional" })
 }
-# # Bastion Host Security Group
-# resource "aws_security_group" "bastion" {
-#   name        = "SG-${local.name}-bastion"
-#   description = "SG_Bastion_Host"
-#   vpc_id      = module.vpc.vpc_id
+# Bastion Host Security Group
+resource "aws_security_group" "bastion" {
+  name        = "SG-${local.name}-bastion"
+  description = "SG_Bastion_Host"
+  vpc_id      = module.vpc.vpc_id
 
-#   ingress {
-#     from_port   = 22
-#     to_port     = 22
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"] # 혹은 보다 제한된 CIDR 블록을 사용하세요
-#   }
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # 혹은 보다 제한된 CIDR 블록을 사용하세요
+  }
 
-#   egress {
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-#   tags = {
-#     Name = "${local.name}-bastion"
-#   }
-# }
+  tags = {
+    Name = "${local.name}-bastion"
+  }
+}
 
 # # Bastion Host EC2 Instance
 # resource "aws_instance" "bastion" {
@@ -359,8 +397,8 @@ module "kms" {
   source  = "terraform-aws-modules/kms/aws"
   version = "~> 1.5"
 
-  aliases               = ["eks/${local.name}"]
-  description           = "${local.name} cluster encryption key"
+  aliases               = ["2eks/${local.name}"]
+  description           = "2${local.name} cluster encryption key"
   enable_default_policy = true
   key_owners            = [data.aws_caller_identity.current.arn]
 
