@@ -55,6 +55,142 @@ locals {
   }
 }
 
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 4.0"
+
+  name = local.name
+  cidr = local.vpc_cidr
+
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+
+  # enable_nat_gateway = true
+  # single_nat_gateway = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
+
+  tags = local.tags
+}
+
+resource "aws_subnet" "rds_subnet_1" {
+  vpc_id            = module.vpc.vpc_id
+  cidr_block        = "10.0.100.0/24"  # Start from a higher range
+  availability_zone = local.azs[0]
+  tags = {
+    Name = "${local.name}-rds-1"
+  }
+}
+
+resource "aws_subnet" "rds_subnet_2" {
+  vpc_id            = module.vpc.vpc_id
+  cidr_block        = "10.0.101.0/24"  # Ensure there's no overlap
+  availability_zone = local.azs[1]
+  tags = {
+    Name = "${local.name}-rds-2"
+  }
+}
+
+
+# DB 서브넷 그룹 생성
+resource "aws_db_subnet_group" "rds_subnet_group" {
+  name        = "ecommerce-seoul-mariadb-subnet-group"
+  subnet_ids  = [aws_subnet.rds_subnet_1.id, aws_subnet.rds_subnet_2.id]
+  tags = {
+    Name = "My_DB_Subnet_Group"
+  }
+}
+# Assuming the VPC module outputs the ID of a single private routing table
+resource "aws_route_table_association" "rds_subnet_1_association" {
+  subnet_id      = aws_subnet.rds_subnet_1.id
+  route_table_id = module.vpc.private_route_table_ids[0]
+}
+
+resource "aws_route_table_association" "rds_subnet_2_association" {
+  subnet_id      = aws_subnet.rds_subnet_2.id
+  route_table_id = module.vpc.private_route_table_ids[0] # Using the same routing table as above
+}
+
+# SG - NAT Instance
+resource "aws_security_group" "nat_instance_sg" {
+  name        = "nat-instance-sg"
+  description = "Security group for NAT instance"
+  vpc_id      = module.vpc.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "nat-instance-sg"
+  }
+}
+
+# NAT Instance 1
+resource "aws_instance" "nat_instance" {
+  ami           = "ami-08074b02473276b92"
+  instance_type = "t3.micro"
+  subnet_id     = module.vpc.public_subnets[0] # 첫 번째 퍼블릭 서브넷의 ID
+  security_groups = [aws_security_group.nat_instance_sg.id]
+
+  associate_public_ip_address = true
+  source_dest_check           = false
+
+  tags = {
+    Name = "NAT-Instance"
+  }
+}
+# NAT Instance 2
+resource "aws_instance" "nat_instance_2" {
+  ami           = "ami-08074b02473276b92"
+  instance_type = "t3.micro"
+  subnet_id     = module.vpc.public_subnets[1] # 두 번째 퍼블릭 서브넷의 ID
+  security_groups = [aws_security_group.nat_instance_sg.id]
+
+  associate_public_ip_address = true
+  source_dest_check           = false
+
+  tags = {
+    Name = "NAT-Instance-2"
+  }
+}
+
+
+resource "aws_route" "private_subnet_to_nat" {
+  route_table_id         = module.vpc.private_route_table_ids[0]
+  destination_cidr_block = "0.0.0.0/0"
+  network_interface_id   = aws_instance.nat_instance.primary_network_interface_id
+}
+
+
+
+
+
+# resource "aws_db_instance" "default" {
+#   allocated_storage    = 20
+#   storage_type         = "gp2"
+#   engine               = "mariadb"
+#   engine_version       = "10.6.14"  # MariaDB 엔진 버전을 확인하세요
+#   instance_class       = "db.t3.medium"
+#   identifier           = "amzdraw-seoul-mariadb"  # 데이터베이스 인스턴스 식별자
+#   db_name              = "amzdraw-DB"  # 데이터베이스 이름
+#   username             = "dohyungjunyong"
+#   password             = "dohyungjunyong"
+#   parameter_group_name = "default.mariadb10.6"  # MariaDB에 맞는 파라미터 그룹
+#   db_subnet_group_name = aws_db_subnet_group.rds_subnet_group.name
+#   skip_final_snapshot  = true
+# }
+
 ################################################################################
 # EKS Module
 ################################################################################
@@ -69,11 +205,6 @@ module "eks" {
     coredns = {
       preserve    = true
       most_recent = true
-
-      timeouts = {
-        create = "25m"
-        delete = "10m"
-      }
     }
     kube-proxy = {
       most_recent = true
@@ -141,9 +272,10 @@ module "eks" {
   eks_managed_node_group_defaults = {
     ami_type = "AL2_x86_64"
   }
+
   eks_managed_node_groups = {
     service_node_group = {
-      name = "service-node-group"
+      name = "service_node_group"
 
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
@@ -163,14 +295,13 @@ module "eks" {
 
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
-
-
+      # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
+      subnet_ids     = [for i in range(length(local.azs)) : module.vpc.private_subnets[i]]
 
       min_size     = 1
       max_size     = 1
       desired_size = 1
       # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
-      subnet_ids = [for i in range(length(local.azs)) : module.vpc.private_subnets[i]]
 
       tags = {
         ExtraTag = "example"
@@ -187,7 +318,7 @@ module "eks" {
     #   max_size     = 1
     #   desired_size = 1
     #   # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
-    #   subnet_ids = [aws_subnet.rds_subnet_2.id]
+    #   subnet_ids     =  [aws_subnet.rds_subnet_2.id]
 
     #   tags = {
     #     ExtraTag = "example"
@@ -236,89 +367,6 @@ module "eks" {
 # Supporting resources
 ################################################################################
 
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 4.0"
-
-  name = local.name
-  cidr = local.vpc_cidr
-
-  azs             = local.azs
-  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
-  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
-
-  enable_nat_gateway = true
-  single_nat_gateway = true
-
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
-  }
-
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1
-  }
-
-  tags = local.tags
-}
-
-resource "aws_subnet" "rds_subnet_1" {
-  vpc_id            = module.vpc.vpc_id
-  cidr_block        = "10.0.100.0/24"  # Start from a higher range
-  availability_zone = local.azs[0]
-  tags = {
-    Name = "${local.name}-rds-1"
-  }
-}
-
-resource "aws_subnet" "rds_subnet_2" {
-  vpc_id            = module.vpc.vpc_id
-  cidr_block        = "10.0.101.0/24"  # Ensure there's no overlap
-  availability_zone = local.azs[1]
-  tags = {
-    Name = "${local.name}-rds-2"
-  }
-}
-
-
-# DB 서브넷 그룹 생성
-resource "aws_db_subnet_group" "rds_subnet_group" {
-  name        = "ecommerce-seoul-mariadb-subnet-group"
-  subnet_ids  = [aws_subnet.rds_subnet_1.id, aws_subnet.rds_subnet_2.id]
-  tags = {
-    Name = "My_DB_Subnet_Group"
-  }
-}
-
-# Assuming the VPC module outputs the ID of a single private routing table
-resource "aws_route_table_association" "rds_subnet_1_association" {
-  subnet_id      = aws_subnet.rds_subnet_1.id
-  route_table_id = module.vpc.private_route_table_ids[0]
-}
-
-resource "aws_route_table_association" "rds_subnet_2_association" {
-  subnet_id      = aws_subnet.rds_subnet_2.id
-  route_table_id = module.vpc.private_route_table_ids[0] # Using the same routing table as above
-}
-
-
-
-# resource "aws_db_instance" "default" {
-#   allocated_storage    = 20
-#   storage_type         = "gp2"
-#   engine               = "mariadb"
-#   engine_version       = "10.6.14"  # MariaDB 엔진 버전을 확인하세요
-#   instance_class       = "db.t3.medium"
-#   identifier           = "ecommerce-seoul-mariadb"  # 데이터베이스 인스턴스 식별자
-#   db_name              = "EcommerceDB"  # 데이터베이스 이름
-#   username             = "dohyungjunyong"
-#   password             = "dohyungjunyong"
-#   parameter_group_name = "default.mariadb10.6"  # MariaDB에 맞는 파라미터 그룹
-#   db_subnet_group_name = aws_db_subnet_group.rds_subnet_group.name
-#   skip_final_snapshot  = true
-# }
-
-
-
 resource "aws_security_group" "additional" {
   name_prefix = "${local.name}-additional"
   vpc_id      = module.vpc.vpc_id
@@ -361,20 +409,20 @@ resource "aws_security_group" "bastion" {
   }
 }
 
-# # Bastion Host EC2 Instance
-# resource "aws_instance" "bastion" {
-#   ami           = "ami-09eb4311cbaecf89d" # Ubuntu 20.04 LTS AMI ID 
-#   instance_type = "t2.micro"
+# Bastion Host EC2 Instance
+resource "aws_instance" "bastion" {
+  ami           = "ami-0cfaf4bd9bad9f802" 
+  instance_type = "t2.micro"
 
-#   associate_public_ip_address = true
-#   security_groups= [aws_security_group.bastion.id]
+  associate_public_ip_address = true
+  security_groups= [aws_security_group.bastion.id]
 
-#   subnet_id = module.vpc.public_subnets[0]
+  subnet_id = module.vpc.public_subnets[0]
 
-#   tags = {
-#     Name = "${local.name}-bastion"
-#   }
-# }
+  tags = {
+    Name = "bastion-${local.name}"
+  }
+}
 
 resource "aws_iam_policy" "additional" {
   name = "${local.name}-additional"
@@ -397,16 +445,21 @@ module "kms" {
   source  = "terraform-aws-modules/kms/aws"
   version = "~> 1.5"
 
-  aliases               = ["2eks/${local.name}"]
-  description           = "2${local.name} cluster encryption key"
+  aliases               = ["amzdraw-eks/${local.name}"]
+  description           = "${local.name} cluster encryption key"
   enable_default_policy = true
   key_owners            = [data.aws_caller_identity.current.arn]
 
   tags = local.tags
 }
 
+
 resource "aws_s3_bucket" "amz-draw-tfstate" {
   bucket = "amz-draw-s3-bucket-tfstate"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_versioning" "amz-draw-versioning" {
@@ -414,15 +467,7 @@ resource "aws_s3_bucket_versioning" "amz-draw-versioning" {
   versioning_configuration {
     status = "Enabled"
   }
-}
-
-resource "aws_dynamodb_table" "terraform_state_lock" {
-  name           = "terraform-tfstate-lock"
-  hash_key       = "LockID"
-  billing_mode   = "PAY_PER_REQUEST"
-
-  attribute {
-    name = "LockID"
-    type = "S"
+  lifecycle {
+    prevent_destroy = true
   }
 }
