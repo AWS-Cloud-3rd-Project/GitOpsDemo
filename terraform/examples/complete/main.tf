@@ -107,7 +107,7 @@ resource "aws_db_subnet_group" "rds_subnet_group" {
     Name = "My_DB_Subnet_Group"
   }
 }
-# Assuming the VPC module outputs the ID of a single private routing table
+
 resource "aws_route_table_association" "rds_subnet_1_association" {
   subnet_id      = aws_subnet.rds_subnet_1.id
   route_table_id = module.vpc.private_route_table_ids[0]
@@ -115,8 +115,19 @@ resource "aws_route_table_association" "rds_subnet_1_association" {
 
 resource "aws_route_table_association" "rds_subnet_2_association" {
   subnet_id      = aws_subnet.rds_subnet_2.id
-  route_table_id = module.vpc.private_route_table_ids[0] # Using the same routing table as above
+  route_table_id = module.vpc.private_route_table_ids[0]
 }
+
+resource "aws_route_table_association" "private_subnet_1_association" {
+  subnet_id      = module.vpc.private_subnets[0]
+  route_table_id = module.vpc.private_route_table_ids[0]
+}
+
+# resource "aws_route_table_association" "private_subnet_2_association" {
+#   subnet_id      = module.vpc.private_subnets[1]
+#   route_table_id = module.vpc.private_route_table_ids[0]
+# }
+
 
 # SG - NAT Instance
 resource "aws_security_group" "nat_instance_sg" {
@@ -407,22 +418,25 @@ resource "aws_security_group" "bastion" {
   tags = {
     Name = "${local.name}-bastion"
   }
-}
-
-# Bastion Host EC2 Instance
-resource "aws_instance" "bastion" {
-  ami           = "ami-0cfaf4bd9bad9f802" 
-  instance_type = "t2.micro"
-
-  associate_public_ip_address = true
-  security_groups= [aws_security_group.bastion.id]
-
-  subnet_id = module.vpc.public_subnets[0]
-
-  tags = {
-    Name = "bastion-${local.name}"
+    lifecycle {
+    prevent_destroy = true
   }
 }
+
+# # Bastion Host EC2 Instance
+# resource "aws_instance" "bastion" {
+#   ami           = "ami-0cfaf4bd9bad9f802" 
+#   instance_type = "t2.micro"
+
+#   associate_public_ip_address = true
+#   security_groups= [aws_security_group.bastion.id]
+
+#   subnet_id = module.vpc.public_subnets[0]
+
+#   tags = {
+#     Name = "bastion-${local.name}"
+#   }
+# }
 
 resource "aws_iam_policy" "additional" {
   name = "${local.name}-additional"
