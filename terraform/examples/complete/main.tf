@@ -26,6 +26,7 @@ provider "helm" {
 }
 
 resource "helm_release" "metrics_server" {
+  depends_on = [module.eks]
   namespace        = "kube-system"
   name             = "metrics-server"
   chart            = "metrics-server"
@@ -79,6 +80,7 @@ module "vpc" {
 
   tags = local.tags
 }
+
 
 resource "aws_subnet" "rds_subnet_1" {
   vpc_id            = module.vpc.vpc_id
@@ -173,9 +175,6 @@ resource "aws_route" "private_subnet_to_nat" {
 }
 
 
-
-
-
 # resource "aws_db_instance" "default" {
 #   allocated_storage    = 20
 #   storage_type         = "gp2"
@@ -268,9 +267,6 @@ module "eks" {
       type                     = "ingress"
       source_security_group_id = aws_security_group.additional.id
     }
-  }
-  eks_managed_node_group_defaults = {
-    ami_type = "AL2_x86_64"
   }
 
   eks_managed_node_groups = {
@@ -451,23 +447,4 @@ module "kms" {
   key_owners            = [data.aws_caller_identity.current.arn]
 
   tags = local.tags
-}
-
-
-resource "aws_s3_bucket" "amz-draw-tfstate" {
-  bucket = "amz-draw-s3-bucket-tfstate"
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "aws_s3_bucket_versioning" "amz-draw-versioning" {
-  bucket = aws_s3_bucket.amz-draw-tfstate.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-  lifecycle {
-    prevent_destroy = true
-  }
 }
