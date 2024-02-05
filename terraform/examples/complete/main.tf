@@ -26,6 +26,7 @@ provider "helm" {
 }
 
 resource "helm_release" "metrics_server" {
+  depends_on = [ module.eks ]
   namespace        = "kube-system"
   name             = "metrics-server"
   chart            = "metrics-server"
@@ -44,144 +45,292 @@ data "aws_availability_zones" "available" {}
 data "aws_caller_identity" "current" {}
 
 locals {
-  name   = "EKS-Prod-SEOUL-${replace(basename(path.cwd), "_", "-")}"
+  name   = "amz_mall_dev${replace(basename(path.cwd), "_", "-")}"
   region = "ap-northeast-2"
 
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 2)
 
   tags = {
-    Example    = local.name
+    Name = local.name
   }
 }
 
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 4.0"
-
-  name = local.name
-  cidr = local.vpc_cidr
-
-  azs             = local.azs
-  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
-  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
-
-  # enable_nat_gateway = true
-  # single_nat_gateway = true
-
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
+resource "aws_vpc" "amz_mall_vpc" {
+  cidr_block = local.vpc_cidr
+  enable_dns_support = true
+  enable_dns_hostnames = true
+  tags = {
+    Name = local.name
   }
-
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1
-  }
-
-  tags = local.tags
 }
 
-resource "aws_subnet" "rds_subnet_1" {
-  vpc_id            = module.vpc.vpc_id
-  cidr_block        = "10.0.100.0/24"  # Start from a higher range
+resource "aws_subnet" "public_subnet_1" {
+  vpc_id            = aws_vpc.amz_mall_vpc.id
+  cidr_block        = "10.0.1.0/24"
   availability_zone = local.azs[0]
+  map_public_ip_on_launch = true
   tags = {
-    Name = "${local.name}-rds-1"
+    Name = "${local.name}_public_subnet_1"
   }
 }
 
-resource "aws_subnet" "rds_subnet_2" {
-  vpc_id            = module.vpc.vpc_id
-  cidr_block        = "10.0.101.0/24"  # Ensure there's no overlap
+resource "aws_subnet" "public_subnet_2" {
+  vpc_id            = aws_vpc.amz_mall_vpc.id
+  cidr_block        = "10.0.3.0/24"
   availability_zone = local.azs[1]
+  map_public_ip_on_launch = true
   tags = {
-    Name = "${local.name}-rds-2"
+    Name = "${local.name}_public_subnet_2"
   }
 }
 
-
-# DB 서브넷 그룹 생성
-resource "aws_db_subnet_group" "rds_subnet_group" {
-  name        = "ecommerce-seoul-mariadb-subnet-group"
-  subnet_ids  = [aws_subnet.rds_subnet_1.id, aws_subnet.rds_subnet_2.id]
+resource "aws_subnet" "private_subnet_1" {
+  vpc_id            = aws_vpc.amz_mall_vpc.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = local.azs[0]
+  map_public_ip_on_launch = false
   tags = {
-    Name = "My_DB_Subnet_Group"
+    Name = "${local.name}_private_subnet_1"
   }
 }
 
-resource "aws_route_table_association" "rds_subnet_1_association" {
-  subnet_id      = aws_subnet.rds_subnet_1.id
-  route_table_id = module.vpc.private_route_table_ids[0]
+resource "aws_subnet" "private_subnet_2" {
+  vpc_id            = aws_vpc.amz_mall_vpc.id
+  cidr_block        = "10.0.4.0/24"
+  availability_zone = local.azs[1]
+  map_public_ip_on_launch = false
+  tags = {
+    Name = "${local.name}_private_subnet_2"
+  }
 }
 
-resource "aws_route_table_association" "rds_subnet_2_association" {
-  subnet_id      = aws_subnet.rds_subnet_2.id
-  route_table_id = module.vpc.private_route_table_ids[0]
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.amz_mall_vpc.id
+  tags = {
+    Name = "${local.name}_igw"
+  }
+}
+
+resource "aws_eip" "nat_eip_1" {
+  domain = "vpc"
+  depends_on = [aws_internet_gateway.igw]
+}
+
+resource "aws_nat_gateway" "nat_gw_1" {
+  allocation_id = aws_eip.nat_eip_1.id
+  subnet_id     = aws_subnet.public_subnet_1.id
+  tags = {
+    Name = "${local.name}_nat_gw_1"
+  }
+}
+
+resource "aws_eip" "nat_eip_2" {
+  domain = "vpc"
+  depends_on = [aws_internet_gateway.igw]
+}
+
+resource "aws_nat_gateway" "nat_gw_2" {
+  allocation_id = aws_eip.nat_eip_2.id
+  subnet_id     = aws_subnet.public_subnet_2.id
+  tags = {
+    Name = "${local.name}_nat_gw_2"
+  }
+}
+
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.amz_mall_vpc.id
+  tags = {
+    Name = "${local.name}_public_rt"
+  }
+}
+
+resource "aws_route" "public_rt_igw" {
+  route_table_id         = aws_route_table.public_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+resource "aws_route_table_association" "public_subnet_1_association" {
+  subnet_id      = aws_subnet.public_subnet_1.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table_association" "public_subnet_2_association" {
+  subnet_id      = aws_subnet.public_subnet_2.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table" "private_rt" {
+  vpc_id = aws_vpc.amz_mall_vpc.id
+  tags = {
+    Name = "${local.name}_private_rt"
+  }
+}
+
+resource "aws_route" "private_rt_nat_gw_1" {
+  route_table_id         = aws_route_table.private_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.nat_gw_1.id
 }
 
 resource "aws_route_table_association" "private_subnet_1_association" {
-  subnet_id      = module.vpc.private_subnets[0]
-  route_table_id = module.vpc.private_route_table_ids[0]
+  subnet_id      = aws_subnet.private_subnet_1.id
+  route_table_id = aws_route_table.private_rt.id
 }
 
-# resource "aws_route_table_association" "private_subnet_2_association" {
-#   subnet_id      = module.vpc.private_subnets[1]
-#   route_table_id = module.vpc.private_route_table_ids[0]
+resource "aws_route_table_association" "private_subnet_2_association" {
+  subnet_id      = aws_subnet.private_subnet_2.id
+  route_table_id = aws_route_table.private_rt.id
+}
+
+
+
+# module "vpc" {
+#   source  = "terraform-aws-modules/vpc/aws"
+#   version = "~> 4.0"
+
+#   name = local.name
+#   cidr = local.vpc_cidr
+
+#   azs             = local.azs
+#   private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+#   public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+
+#   enable_nat_gateway = true
+#   single_nat_gateway = true
+
+#   public_subnet_tags = {
+#     "kubernetes.io/role/elb" = 1
+#   }
+
+#   private_subnet_tags = {
+#     "kubernetes.io/role/internal-elb" = 1
+#   }
+
+#   tags = local.tags
+# }
+
+# resource "aws_subnet" "rds_subnet_1" {
+#   vpc_id            = module.vpc.vpc_id
+#   cidr_block        = "10.0.100.0/24"  # Start from a higher range
+#   availability_zone = local.azs[0]
+#   tags = {
+#     Name = "${local.name}-rds-1"
+#   }
+# }
+
+# resource "aws_subnet" "rds_subnet_2" {
+#   vpc_id            = module.vpc.vpc_id
+#   cidr_block        = "10.0.101.0/24"  # Ensure there's no overlap
+#   availability_zone = local.azs[1]
+#   tags = {
+#     Name = "${local.name}-rds-2"
+#   }
 # }
 
 
-# SG - NAT Instance
-resource "aws_security_group" "nat_instance_sg" {
-  name        = "nat-instance-sg"
-  description = "Security group for NAT instance"
-  vpc_id      = module.vpc.vpc_id
+# # DB 서브넷 그룹 생성
+# resource "aws_db_subnet_group" "rds_subnet_group" {
+#   name        = "ecommerce-seoul-mariadb-subnet-group"
+#   subnet_ids  = [aws_subnet.rds_subnet_1.id, aws_subnet.rds_subnet_2.id]
+#   tags = {
+#     Name = "My_DB_Subnet_Group"
+#   }
+# }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+# resource "aws_route_table_association" "rds_subnet_1_association" {
+#   subnet_id      = aws_subnet.rds_subnet_1.id
+#   route_table_id = module.vpc.private_route_table_ids[0]
+# }
 
-  tags = {
-    Name = "nat-instance-sg"
-  }
-}
+# resource "aws_route_table_association" "rds_subnet_2_association" {
+#   subnet_id      = aws_subnet.rds_subnet_2.id
+#   route_table_id = module.vpc.private_route_table_ids[0]
+# }
 
-# NAT Instance 1
-resource "aws_instance" "nat_instance" {
-  ami           = "ami-08074b02473276b92"
-  instance_type = "t3.micro"
-  subnet_id     = module.vpc.public_subnets[0] # 첫 번째 퍼블릭 서브넷의 ID
-  security_groups = [aws_security_group.nat_instance_sg.id]
-
-  associate_public_ip_address = true
-  source_dest_check           = false
-
-  tags = {
-    Name = "NAT-Instance"
-  }
-}
-# NAT Instance 2
-resource "aws_instance" "nat_instance_2" {
-  ami           = "ami-08074b02473276b92"
-  instance_type = "t3.micro"
-  subnet_id     = module.vpc.public_subnets[1] # 두 번째 퍼블릭 서브넷의 ID
-  security_groups = [aws_security_group.nat_instance_sg.id]
-
-  associate_public_ip_address = true
-  source_dest_check           = false
-
-  tags = {
-    Name = "NAT-Instance-2"
-  }
-}
+# resource "aws_route" "public_route_table_to_igw" {
+#   route_table_id         = module.vpc.public_route_table_ids[0]
+#   destination_cidr_block = "0.0.0.0/0" # 모든 인터넷 트래픽
+#   gateway_id             = module.vpc.igw_id # 인터넷 게이트웨이 ID
+# }
+# resource "aws_route_table_association" "public_route_table_to_igw" {
+#   for_each      = { for idx, subnet_id in module.vpc.public_subnets : idx => subnet_id }
+#   subnet_id     = each.value
+#   route_table_id = module.vpc.public_route_table_ids[0]
+# }
 
 
-resource "aws_route" "private_subnet_to_nat" {
-  route_table_id         = module.vpc.private_route_table_ids[0]
-  destination_cidr_block = "0.0.0.0/0"
-  network_interface_id   = aws_instance.nat_instance.primary_network_interface_id
-}
+# resource "aws_route" "private_subnet_to_nat" {
+#   route_table_id         = module.vpc.private_route_table_ids[1]
+#   destination_cidr_block = "0.0.0.0/0" # 모든 인터넷 트래픽
+#   network_interface_id   = data.aws_network_interface.nat.id
+# }
+
+# resource "aws_route_table_association" "private_subnet_to_nat" {
+#   for_each      = { for idx, subnet_id in module.vpc.private_subnets : idx => subnet_id }
+#   subnet_id     = each.value
+#   route_table_id = module.vpc.private_route_table_ids[1]
+# }
+
+
+# data "aws_network_interface" "amz_draw_nat" {
+#   filter {
+#     name   = "attachment.instance-id"
+#     values = [aws_instance.nat_instance.id]
+#   }
+# }
+
+
+# # SG - NAT Instance
+# resource "aws_security_group" "nat_instance_sg" {
+#   name        = "nat-instance-sg"
+#   description = "Security group for NAT instance"
+#   vpc_id      = module.vpc.vpc_id
+
+#   egress {
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+
+#   tags = {
+#     Name = "nat-instance-sg"
+#   }
+# }
+
+# # NAT Instance 1
+# resource "aws_instance" "nat_instance" {
+#   ami           = "ami-08074b02473276b92"
+#   instance_type = "t2.micro"
+#   subnet_id     = module.vpc.public_subnets[0] # 첫 번째 퍼블릭 서브넷의 ID
+#   security_groups = [aws_security_group.nat_instance_sg.id]
+
+#   associate_public_ip_address = true
+#   source_dest_check           = false
+
+#   tags = {
+#     Name = "NAT-Instance"
+#   }
+# }
+# # NAT Instance 2
+# resource "aws_instance" "nat_instance_2" {
+#   ami           = "ami-08074b02473276b92"
+#   instance_type = "t2.micro"
+#   subnet_id     = module.vpc.public_subnets[1] # 두 번째 퍼블릭 서브넷의 ID
+#   security_groups = [aws_security_group.nat_instance_sg.id]
+
+#   associate_public_ip_address = true
+#   source_dest_check           = false
+
+#   tags = {
+#     Name = "NAT-Instance-2"
+#   }
+# }
+
+
+
 
 
 
@@ -224,7 +373,7 @@ module "eks" {
       most_recent = true
     }
   }
-
+ 
   # External encryption key
   create_kms_key = false
   cluster_encryption_config = {
@@ -236,8 +385,8 @@ module "eks" {
     additional = aws_iam_policy.additional.arn
   }
 
-  vpc_id                   = module.vpc.vpc_id
-  subnet_ids               = module.vpc.private_subnets
+  vpc_id = aws_vpc.amz_mall_vpc.id #module.vpc.vpc_id
+  subnet_ids = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]     # module.vpc.private_subnets
   
   # Extend cluster security group rules
   cluster_security_group_additional_rules = {
@@ -280,34 +429,31 @@ module "eks" {
       source_security_group_id = aws_security_group.additional.id
     }
   }
-  eks_managed_node_group_defaults = {
-    ami_type = "AL2_x86_64"
-  }
-
   eks_managed_node_groups = {
     service_node_group = {
       name = "service_node_group"
-
+      iam_role_attach_cni_policy = true
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
 
       min_size     = 2
       max_size     = 4
       desired_size = 2
-      # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
-      subnet_ids     = [for i in range(length(local.azs)) : module.vpc.private_subnets[i]]
+      # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근 
+      subnet_ids     = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id] # module.vpc.private_subnets[i]
 
       tags = {
         ExtraTag = "example"
       }
     }
     eco_system_node_group = {
+      iam_role_attach_cni_policy = true
       name = "eco_system_node_group"
 
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
       # local.azs에서 az의 인덱스를 사용하여 각 서브넷 ID에 접근
-      subnet_ids     = [for i in range(length(local.azs)) : module.vpc.private_subnets[i]]
+      subnet_ids     = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id] # [for i in range(length(local.azs)) : module.vpc.private_subnets[i]]
 
       min_size     = 1
       max_size     = 1
@@ -380,7 +526,7 @@ module "eks" {
 
 resource "aws_security_group" "additional" {
   name_prefix = "${local.name}-additional"
-  vpc_id      = module.vpc.vpc_id
+  vpc_id      = aws_vpc.amz_mall_vpc.id # module.vpc.vpc_id
 
   ingress {
     from_port = 22
@@ -399,7 +545,7 @@ resource "aws_security_group" "additional" {
 resource "aws_security_group" "bastion" {
   name        = "SG-${local.name}-bastion"
   description = "SG_Bastion_Host"
-  vpc_id      = module.vpc.vpc_id
+  vpc_id      = aws_vpc.amz_mall_vpc.id # module.vpc.vpc_id
 
   ingress {
     from_port   = 22
@@ -417,9 +563,6 @@ resource "aws_security_group" "bastion" {
 
   tags = {
     Name = "${local.name}-bastion"
-  }
-    lifecycle {
-    prevent_destroy = true
   }
 }
 
@@ -465,23 +608,4 @@ module "kms" {
   key_owners            = [data.aws_caller_identity.current.arn]
 
   tags = local.tags
-}
-
-
-resource "aws_s3_bucket" "amz-draw-tfstate" {
-  bucket = "amz-draw-s3-bucket-tfstate"
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "aws_s3_bucket_versioning" "amz-draw-versioning" {
-  bucket = aws_s3_bucket.amz-draw-tfstate.id
-  versioning_configuration {
-    status = "Enabled"
-  }
-  lifecycle {
-    prevent_destroy = true
-  }
 }
