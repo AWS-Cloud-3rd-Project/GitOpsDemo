@@ -215,3 +215,11 @@ output "aws_auth_configmap_yaml" {
 #   value = aws_db_instance.default.arn
 #   description = "The ARN of the RDS instance"
 # }
+
+################################################################################
+# Route 53
+################################################################################
+
+# output "name_servers" {
+#   value = aws_route53_zone.my_zone.name_servers
+# }
