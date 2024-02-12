@@ -2,6 +2,14 @@ provider "aws" {
   region = local.region
 }
 
+# data "aws_eks_cluster" "cluster" {
+#   name = aws_eks_cluster.eks_cluster.name
+# }
+
+# data "aws_eks_cluster_auth" "cluster" {
+#   name = aws_eks_cluster.eks_cluster.name
+# }
+
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
@@ -12,7 +20,11 @@ provider "kubernetes" {
     # This requires the awscli to be installed locally where Terraform is executed
     args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
   }
+  # host                   = data.aws_eks_cluster.cluster.endpoint
+  # cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority.0.data)
+  # token                  = data.aws_eks_cluster_auth.cluster.token
 }
+
 provider "helm" {
   kubernetes {
     host                   = module.eks.cluster_endpoint
@@ -22,10 +34,14 @@ provider "helm" {
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
     }
+    # host                   = data.aws_eks_cluster.cluster.endpoint
+    # cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority.0.data)
+    # token                  = data.aws_eks_cluster_auth.cluster.token
   }
 }
 
 resource "helm_release" "metrics_server" {
+  
   depends_on = [ module.eks ]
   namespace        = "kube-system"
   name             = "metrics-server"
@@ -33,11 +49,21 @@ resource "helm_release" "metrics_server" {
   version          = "3.11.0"
   repository       = "https://kubernetes-sigs.github.io/metrics-server/"
   create_namespace = true
-  
   set {
     name  = "replicas"
     value = 1
   }
+  # depends_on = [aws_eks_cluster.eks_cluster]
+  # namespace  = "kube-system"
+  # name       = "metrics-server"
+  # chart      = "metrics-server"
+  # version    = "3.11.0"
+  # repository = "https://kubernetes-sigs.github.io/metrics-server/"
+  # set {
+  #   name  = "replicas"
+  #   value = "1"
+  # }
+
 }
 
 
@@ -145,12 +171,20 @@ resource "aws_instance" "nat_instance_1" {
   security_groups = [aws_security_group.nat_instance_sg.id]
 
   associate_public_ip_address = true
-  source_dest_check           = false
+  source_dest_check = false
 
   tags = {
     Name = "NAT-Instance"
   }
 }
+resource "aws_eip" "nat_eip" {
+  domain = "vpc"
+}
+resource "aws_eip_association" "eip_assoc" {
+  instance_id   = aws_instance.nat_instance_1.id
+  allocation_id = aws_eip.nat_eip.id
+}
+
 # NAT Instance 2
 resource "aws_instance" "nat_instance_2" {
   ami           = "ami-08074b02473276b92"
@@ -159,11 +193,18 @@ resource "aws_instance" "nat_instance_2" {
   security_groups = [aws_security_group.nat_instance_sg.id]
 
   associate_public_ip_address = true
-  source_dest_check           = false
+  source_dest_check = false
 
   tags = {
     Name = "NAT-Instance-2"
   }
+}
+resource "aws_eip" "nat_eip_2" {
+  domain = "vpc"
+}
+resource "aws_eip_association" "eip_assoc2" {
+  instance_id   = aws_instance.nat_instance_2.id
+  allocation_id = aws_eip.nat_eip_2.id
 }
 
 ################################################################################
@@ -235,7 +276,18 @@ resource "aws_route_table" "private_rt" {
     Name = "${local.name}_private_rt"
   }
 }
+resource "aws_route_table_association" "private_subnet_1_association" {
+  subnet_id      = aws_subnet.private_subnet_1.id
+  route_table_id = aws_route_table.private_rt.id
+}
 
+resource "aws_route_table_association" "private_subnet_2_association" {
+  subnet_id      = aws_subnet.private_subnet_2.id
+  route_table_id = aws_route_table.private_rt.id
+}
+################################################################################
+# private route table - NAT Instance
+################################################################################
 resource "aws_route" "private_to_nat" {
   route_table_id         = aws_route_table.private_rt.id
   destination_cidr_block = "0.0.0.0/0"
@@ -248,22 +300,30 @@ data "aws_network_interface" "nat_instance_1_ni" {
     values = [aws_instance.nat_instance_1.id]
   }
 }
-
+################################################################################
+# private route table - NAT GW
+################################################################################
 # resource "aws_route" "private_rt_nat_gw_1" {
 #   route_table_id         = aws_route_table.private_rt.id
 #   destination_cidr_block = "0.0.0.0/0"
 #   nat_gateway_id         = aws_nat_gateway.nat_gw_1.id
 # }
 
-resource "aws_route_table_association" "private_subnet_1_association" {
-  subnet_id      = aws_subnet.private_subnet_1.id
-  route_table_id = aws_route_table.private_rt.id
-}
+# resource "aws_route_table_association" "private_subnet_1_association" {
+#   subnet_id      = aws_subnet.private_subnet_1.id
+#   route_table_id = aws_route_table.private_rt.id
+# }
 
-resource "aws_route_table_association" "private_subnet_2_association" {
-  subnet_id      = aws_subnet.private_subnet_2.id
-  route_table_id = aws_route_table.private_rt.id
-}
+# resource "aws_route_table_association" "private_subnet_2_association" {
+#   subnet_id      = aws_subnet.private_subnet_2.id
+#   route_table_id = aws_route_table.private_rt.id
+# }
+
+
+################################################################################
+# RDS DataBase
+################################################################################
+
 
 resource "aws_subnet" "rds_subnet_1" {
   vpc_id            = aws_vpc.amz_mall_vpc.id
@@ -302,9 +362,6 @@ resource "aws_route_table_association" "rds_subnet_2_association" {
   subnet_id      = aws_subnet.rds_subnet_2.id
   route_table_id = aws_route_table.private_rt.id
 }
-################################################################################
-# RDS DataBase
-################################################################################
 
 # resource "aws_db_instance" "default" {
 #   allocated_storage    = 20
@@ -327,7 +384,7 @@ resource "aws_route_table_association" "rds_subnet_2_association" {
 
 module "eks" {
   source = "../.."
-
+  cluster_version = "1.28"
   cluster_name                   = local.name
   cluster_endpoint_public_access = true
 
@@ -579,28 +636,231 @@ module "kms" {
   tags = local.tags
 }
 
-################################################################################
-# Route53
-################################################################################
-# Route 53 호스팅 영역 생성
-# resource "aws_route53_zone" "themzmall" {
-#   name = "themzmall.shop" # 호스팅할 도메인 이름
+
+# ################################################################################
+# # EKS Reousrces EKS 클러스터를 위한 IAM 역할과 정책
+# ################################################################################
+# resource "aws_iam_role" "eks_cluster_role" {
+#   name = "eks_cluster_role"
+
+#   assume_role_policy = jsonencode({
+#     Version = "2012-10-17",
+#     Statement = [
+#       {
+#         Effect = "Allow",
+#         Principal = {
+#           Service = "eks.amazonaws.com",
+#         },
+#         Action = "sts:AssumeRole",
+#       },
+#     ],
+#   })
 # }
 
-# # A 레코드 - 도메인을 IP 주소로 연결
-# resource "aws_route53_record" "a_record" {
-#   zone_id = aws_route53_zone.themzmall.id  # 위에서 생성한 호스팅 영역 ID
-#   name    = "themzmall.shop"                 # 레코드에 대한 도메인 이름
-#   type    = "A"                              # 레코드 타입 A
-#   ttl     = "300"                            # 레코드의 Time To Live
-#   records = ["192.0.2.1"]                    # IP 주소
+# resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
+#   role       = aws_iam_role.eks_cluster_role.id
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 # }
 
-# # CNAME 레코드 - www를 theamzmall.shop 도메인으로 연결
-# resource "aws_route53_record" "cname_record" {
-#   zone_id = aws_route53_zone.example.zone_id # 호스팅 영역 ID
-#   name    = "www.theamzmall.shop"            # CNAME 레코드에 대한 도메인 이름
-#   type    = "CNAME"                          # 레코드 타입 CNAME
-#   ttl     = "300"                            # Time To Live
-#   records = ["theamzmall.shop"]              # CNAME의 대상 도메인
+# resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSServicePolicy" {
+#   role       = aws_iam_role.eks_cluster_role.id
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+# }
+
+
+# ################################################################################
+# # EKS Reousrces EKS 클러스터
+# ################################################################################
+
+# resource "aws_eks_cluster" "eks_cluster" {
+#   name     = "amz_mall_dev_eks_cluster"
+#   role_arn = aws_iam_role.eks_cluster_role.arn
+
+#   version = "1.28"
+
+#   vpc_config {
+#     subnet_ids = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+#     endpoint_public_access  = true
+#   }
+
+#   encryption_config {
+#     provider {
+#       key_arn = aws_kms_key.eks.arn
+#     }
+#     resources = ["secrets"]
+#   }
+
+#   depends_on = [
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSServicePolicy,
+#   ]
+# }
+# ################################################################################
+# # EKS Reousrces EKS 노드 그룹
+# ################################################################################
+
+# resource "aws_iam_role" "eks_node_role" {
+#   name = "eks_node_role"
+
+#   assume_role_policy = jsonencode({
+#     Version = "2012-10-17",
+#     Statement = [
+#       {
+#         Effect = "Allow",
+#         Principal = {
+#           Service = "ec2.amazonaws.com",
+#         },
+#         Action = "sts:AssumeRole",
+#       },
+#     ],
+#   })
+# }
+
+# resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
+#   role       = aws_iam_role.eks_node_role.id
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+# }
+
+# resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
+#   role       = aws_iam_role.eks_node_role.id
+#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+# }
+# ################################################################################
+# # EKS Reousrces EKS 노드 그룹 리소스
+# ################################################################################
+# resource "aws_eks_node_group" "service_node_group" {
+#   cluster_name    = aws_eks_cluster.eks_cluster.name
+#   node_group_name = "service_node_group"
+#   node_role_arn   = aws_iam_role.eks_node_role.arn
+#   subnet_ids      = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+
+#   scaling_config {
+#     desired_size = 2
+#     max_size     = 4
+#     min_size     = 2
+#   }
+
+#   instance_types = ["t3.medium"]
+# }
+
+# resource "aws_eks_node_group" "eco_system_node_group" {
+#   cluster_name    = aws_eks_cluster.eks_cluster.name
+#   node_group_name = "eco_system_node_group"
+#   node_role_arn   = aws_iam_role.eks_node_role.arn
+#   subnet_ids      = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+
+#   scaling_config {
+#     desired_size = 1
+#     max_size     = 1
+#     min_size     = 1
+#   }
+
+#   instance_types = ["t3.medium"]
+# }
+
+
+
+# ################################################################################
+# # AWS Auth ConfigMap 관리
+# ################################################################################
+
+# resource "kubernetes_config_map" "aws_auth" {
+#   depends_on = [aws_eks_node_group.service_node_group, aws_eks_node_group.eco_system_node_group]
+#   metadata {
+#     name      = "aws-auth"
+#     namespace = "kube-system"
+#   }
+
+#   data = {
+#     mapRoles = yamlencode([
+#       {
+#         rolearn  = aws_iam_role.eks_node_role.arn
+#         username = "system:node:{{EC2PrivateDNSName}}"
+#         groups   = ["system:bootstrappers", "system:nodes"]
+#       },
+#       {
+#         rolearn  = "arn:aws:iam::009946608368:role/AdditionalRole"
+#         username = "additionalRole"
+#         groups   = ["system:masters"]
+#       }
+#     ])
+#     mapUsers = yamlencode([
+#       {
+#         userarn  = "arn:aws:iam::009946608368:user/DOHYUNG"
+#         username = "DOHYUNG"
+#         groups   = ["system:masters"]
+#       },
+#       {
+#         userarn  = "arn:aws:iam::009946608368:user/DOHYUNG2"
+#         username = "DOHYUNG2"
+#         groups   = ["system:masters"]
+#       },
+#       {
+#         userarn  = "arn:aws:iam::009946608368:user/JUNYONG"
+#         username = "JUNYONG"
+#         groups   = ["system:masters"]
+#       }
+#     ])
+#   }
+# }
+
+
+# resource "aws_kms_key" "eks" {
+#   description             = "KMS key for EKS encryption"
+#   enable_key_rotation     = true
+#   deletion_window_in_days = 10
+# }
+
+# resource "aws_security_group" "eks_cluster_sg" {
+#   name        = "eks-cluster-sg"
+#   description = "Security group for EKS cluster"
+#   vpc_id      = aws_vpc.amz_mall_vpc.id
+
+#   ingress {
+#     from_port   = 1025
+#     to_port     = 65535
+#     protocol    = "tcp"
+#     self        = true
+#     description = "Nodes on ephemeral ports"
+#   }
+
+#   ingress {
+#     from_port   = 22
+#     to_port     = 22
+#     protocol    = "tcp"
+#     security_groups = [aws_security_group.additional.id]
+#     description = "Ingress from another computed security group"
+#   }
+
+#   egress {
+#     from_port   = 0
+#     to_port     = 0
+#     protocol    = "-1"
+#     cidr_blocks = ["0.0.0.0/0"]
+#   }
+# }
+# resource "aws_eks_addon" "kube_proxy" {
+#   cluster_name  = aws_eks_cluster.eks_cluster.name
+#   addon_name    = "kube-proxy"
+#   addon_version = "v1.28.4-minimal-eksbuild.1"
+# }
+
+# resource "aws_eks_addon" "coredns" {
+#   cluster_name  = aws_eks_cluster.eks_cluster.name
+#   addon_name    = "coredns"
+#   addon_version = "v1.10.1-eksbuild.6"
+# }
+
+
+# resource "aws_eks_addon" "vpc_cni" {
+#   cluster_name  = aws_eks_cluster.eks_cluster.name
+#   addon_name    = "vpc-cni"
+#   addon_version = "v1.16.0-eksbuild.1"
+# }
+
+
+# resource "aws_eks_addon" "pod_identity_webhook" {
+#   cluster_name  = aws_eks_cluster.eks_cluster.name
+#   addon_name    = "vpc-cni" 
+#   addon_version = "v1.10.1-eksbuild.1" # 적절한 버전을 지정합니다.
 # }

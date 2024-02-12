@@ -1,7 +1,6 @@
 ################################################################################
 # Cluster
 ################################################################################
-
 output "cluster_arn" {
   description = "The Amazon Resource Name (ARN) of the cluster"
   value       = module.eks.cluster_arn
@@ -116,16 +115,34 @@ output "cluster_iam_role_unique_id" {
 ################################################################################
 # EKS Addons
 ################################################################################
-
 output "cluster_addons" {
   description = "Map of attribute maps for all EKS cluster addons enabled"
   value       = module.eks.cluster_addons
 }
 
+# output "cluster_addons_coredns" {
+#   description = "Map of attribute maps for all EKS cluster addons enabled"
+#   value       = aws_eks_addon.coredns
+# }
+# output "cluster_addons_kube_proxy" {
+#   description = "Map of attribute maps for all EKS cluster addons enabled"
+#   value       = aws_eks_addon.kube_proxy
+# }
+# output "cluster_addons_vpc_cni" {
+#   description = "Map of attribute maps for all EKS cluster addons enabled"
+#   value       = aws_eks_addon.vpc_cni
+# }
+# output "cluster_addons_pod_identity_webhook" {
+#   description = "Map of attribute maps for all EKS cluster addons enabled"
+#   value       = aws_eks_addon.pod_identity_webhook
+# }
 ################################################################################
 # EKS Identity Provider
 ################################################################################
 
+# output "cluster_identity_providers" {
+#   value = aws_eks_cluster.eks_cluster.identity_providers
+# }
 output "cluster_identity_providers" {
   description = "Map of attribute maps for all EKS identity providers enabled"
   value       = module.eks.cluster_identity_providers
@@ -146,18 +163,8 @@ output "cloudwatch_log_group_arn" {
 }
 
 ################################################################################
-# Fargate Profile
-################################################################################
-
-output "fargate_profiles" {
-  description = "Map of attribute maps for all EKS Fargate Profiles created"
-  value       = module.eks.fargate_profiles
-}
-
-################################################################################
 # EKS Managed Node Group
 ################################################################################
-
 output "eks_managed_node_groups" {
   description = "Map of attribute maps for all EKS managed node groups created"
   value       = module.eks.eks_managed_node_groups
@@ -168,28 +175,32 @@ output "eks_managed_node_groups_autoscaling_group_names" {
   value       = module.eks.eks_managed_node_groups_autoscaling_group_names
 }
 
-################################################################################
-# Self Managed Node Group
-################################################################################
+# output "eks_managed_node_groups" {
+#   value = {
+#     for ng in aws_eks_node_group.service_node_group, aws_eks_node_group.eco_system_node_group :
+#     ng.node_group_name => ng.id
+#   }
+# }
 
-output "self_managed_node_groups" {
-  description = "Map of attribute maps for all self managed node groups created"
-  value       = module.eks.self_managed_node_groups
-}
-
-output "self_managed_node_groups_autoscaling_group_names" {
-  description = "List of the autoscaling group names created by self-managed node groups"
-  value       = module.eks.self_managed_node_groups_autoscaling_group_names
-}
+# output "eks_managed_node_groups_autoscaling_group_names" {
+#   value = {
+#     for ng in aws_eks_node_group.service_node_group, aws_eks_node_group.eco_system_node_group :
+#     ng.node_group_name => ng.resources[0].autoscaling_groups[0].name
+#   }
+# }
 
 ################################################################################
 # Additional
 ################################################################################
-
 output "aws_auth_configmap_yaml" {
   description = "Formatted yaml output for base aws-auth configmap containing roles used in cluster node groups/fargate profiles"
   value       = module.eks.aws_auth_configmap_yaml
 }
+
+# output "aws_auth_configmap_yaml" {
+#   value = kubernetes_config_map.aws_auth.data["mapRoles"]
+# }
+
 
 # output "rds_subnet_1_id" {
 #   value = aws_subnet.rds_subnet_1.id
@@ -214,12 +225,4 @@ output "aws_auth_configmap_yaml" {
 # output "rds_instance_arn" {
 #   value = aws_db_instance.default.arn
 #   description = "The ARN of the RDS instance"
-# }
-
-################################################################################
-# Route 53
-################################################################################
-
-# output "name_servers" {
-#   value = aws_route53_zone.my_zone.name_servers
 # }
