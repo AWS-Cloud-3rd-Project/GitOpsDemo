@@ -65,6 +65,30 @@ resource "helm_release" "metrics_server" {
   # }
 }
 
+resource "helm_release" "aws_load_balancer_controller" {
+  depends_on = [module.eks]
+  name       = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  chart      = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  
+  set {
+    name  = "clusterName"
+    value = module.eks.cluster_name
+  }
+
+  set {
+    name  = "serviceAccount.create"
+    value = "true"
+  }
+
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller"
+  }
+  
+}
+
 
 data "aws_availability_zones" "available" {}
 data "aws_caller_identity" "current" {}
@@ -611,45 +635,6 @@ resource "aws_security_group" "additional" {
   tags = merge(local.tags, { Name = "${local.name}-additional" }) 
 }
 
-# Bastion Host 보안 그룹 설정 - Bastion Host에 대한 보안 그룹을 정의
-resource "aws_security_group" "bastion" {
-  name        = "SG-${local.name}-bastion"
-  description = "SG_Bastion_Host"
-  vpc_id      = aws_vpc.amz_mall_vpc.id
-
-  # Bastion Host로의 SSH 접근을 허용하는 인그레스 규칙을 정의
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # 모든 아웃바운드 트래픽을 허용하는 이그레스 규칙을 정의
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${local.name}-bastion"
-  }
-}
-
-# Bastion Host EC2 인스턴스 설정 - Bastion Host 역할을 할 EC2 인스턴스를 정의
-resource "aws_instance" "bastion" {
-  ami                    = "ami-0cfaf4bd9bad9f802"
-  instance_type          = "t2.micro"
-  associate_public_ip_address = true
-  security_groups        = [aws_security_group.bastion.id]
-  subnet_id              = aws_subnet.public_subnet_2.id
-  tags = {
-    Name = "bastion-${local.name}"
-  }
-}
-
 # 추가 IAM 정책 설정 - 클러스터 관리에 필요한 추가적인 IAM 정책을 정의
 resource "aws_iam_policy" "additional" {
   name   = "${local.name}-additional"
@@ -894,13 +879,11 @@ module "kms" {
 #   addon_version = "v1.10.1-eksbuild.6"
 # }
 
-
 # resource "aws_eks_addon" "vpc_cni" {
 #   cluster_name  = aws_eks_cluster.eks_cluster.name
 #   addon_name    = "vpc-cni"
 #   addon_version = "v1.16.0-eksbuild.1"
 # }
-
 
 # resource "aws_eks_addon" "pod_identity_webhook" {
 #   cluster_name  = aws_eks_cluster.eks_cluster.name
