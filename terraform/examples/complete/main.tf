@@ -2,14 +2,6 @@ provider "aws" {
   region = local.region
 }
 
-# data "aws_eks_cluster" "cluster" {
-#   name = aws_eks_cluster.eks_cluster.name
-# }
-
-# data "aws_eks_cluster_auth" "cluster" {
-#   name = aws_eks_cluster.eks_cluster.name
-# }
-
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
@@ -20,9 +12,6 @@ provider "kubernetes" {
     # This requires the awscli to be installed locally where Terraform is executed
     args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
   }
-  # host                   = data.aws_eks_cluster.cluster.endpoint
-  # cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority.0.data)
-  # token                  = data.aws_eks_cluster_auth.cluster.token
 }
 
 provider "helm" {
@@ -34,9 +23,6 @@ provider "helm" {
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
     }
-    # host                   = data.aws_eks_cluster.cluster.endpoint
-    # cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority.0.data)
-    # token                  = data.aws_eks_cluster_auth.cluster.token
   }
 }
 
@@ -53,16 +39,6 @@ resource "helm_release" "metrics_server" {
     name  = "replicas"
     value = 1
   }
-  # depends_on = [aws_eks_cluster.eks_cluster]
-  # namespace  = "kube-system"
-  # name       = "metrics-server"
-  # chart      = "metrics-server"
-  # version    = "3.11.0"
-  # repository = "https://kubernetes-sigs.github.io/metrics-server/"
-  # set {
-  #   name  = "replicas"
-  #   value = "1"
-  # }
 }
 
 resource "helm_release" "aws_load_balancer_controller" {
@@ -79,7 +55,7 @@ resource "helm_release" "aws_load_balancer_controller" {
 
   set {
     name  = "serviceAccount.create"
-    value = "true"
+    value = "false"
   }
 
   set {
@@ -126,6 +102,7 @@ resource "aws_subnet" "public_subnet_1" {
   map_public_ip_on_launch = true
   tags = {
     Name = "${local.name}_public_subnet_1"
+    "kubernetes.io/role/elb" = "1"
   }
 }
 
@@ -137,6 +114,7 @@ resource "aws_subnet" "public_subnet_2" {
   map_public_ip_on_launch = true
   tags = {
     Name = "${local.name}_public_subnet_2"
+    "kubernetes.io/role/elb" = "1"
   }
 }
 
@@ -420,6 +398,63 @@ resource "aws_route_table_association" "rds_subnet_2_association" {
 #   skip_final_snapshot  = true
 # }
 
+
+# AWS Load Balancer Controller용 IAM 역할을 생성
+# 이 역할은 Kubernetes 서비스 계정이 AWS 서비스와 상호작용할 수 있도록 설정된 OIDC 공급자와 연동
+# https://registry.terraform.io/modules/terraform-aws-modules/iam/aws/latest/examples/iam-role-for-service-accounts-eks#module_load_balancer_controller_targetgroup_binding_only_irsa_role
+module "load_balancer_controller_irsa_role" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                              = "${local.name}-lb-controller-irsa-role"
+  attach_load_balancer_controller_policy = true 
+  
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+
+  tags = local.tags
+}
+# module "load_balancer_controller_targetgroup_binding_only_irsa_role": TargetGroupBinding 작업만을 위한 별도의 IAM 역할을 생성
+# 이는 특정한 작업에 대한 더 세분화된 접근 권한을 설정할 때 유용
+module "load_balancer_controller_targetgroup_binding_only_irsa_role" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name = "${local.name}-lb-controller-tg-binding-only-irsa-role"
+  attach_load_balancer_controller_targetgroup_binding_only_policy = true  
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+
+  tags = local.tags
+}
+
+# resource "kubernetes_service_account" "aws-load-balancer-controller": Kubernetes 내에서 aws-load-balancer-controller라는 서비스 계정을 생성하고,
+# 이전에 만든 IAM 역할과 연결 이 서비스 계정은 AWS Load Balancer Controller가 Kubernetes 클러스터 내에서 실행될 때 사용
+resource "kubernetes_service_account" "aws-load-balancer-controller" {
+  metadata {
+    name        = "aws-load-balancer-controller"
+    namespace   = "kube-system"
+    annotations = {
+      "eks.amazonaws.com/role-arn" = module.load_balancer_controller_irsa_role.iam_role_arn 
+    }
+
+    labels = {
+      "app.kubernetes.io/component" = "controller"
+      "app.kubernetes.io/name" = "aws-load-balancer-controller"
+    }
+
+  }
+
+  depends_on = [module.load_balancer_controller_irsa_role]
+}
+
 ################################################################################
 # EKS Module
 ################################################################################
@@ -533,8 +568,11 @@ iam_role_additional_policies = {
     # 서비스용 노드 그룹
     service_node_group = {
       name = "service_node_group"
+
+      # iam_role_attach_cni_policy 옵션을 true로 설정하면, Amazon EKS 클러스터를 위한 Amazon VPC CNI 플러그인에 필요한 IAM 정책이 자동으로 노드 그룹에 연결
       iam_role_attach_cni_policy = true
-      instance_types = ["t3.medium"]
+
+      instance_types = ["t3.large"]
       capacity_type  = "ON_DEMAND"
       min_size     = 2
       max_size     = 4
@@ -548,7 +586,7 @@ iam_role_additional_policies = {
     eco_system_node_group = {
       iam_role_attach_cni_policy = true
       name = "eco_system_node_group"
-      instance_types = ["t3.medium"]
+      instance_types = ["t3.large"]
       capacity_type  = "ON_DEMAND"
       min_size     = 1
       max_size     = 1
@@ -662,231 +700,3 @@ module "kms" {
 
   tags = local.tags
 }
-
-
-
-# ################################################################################
-# # EKS Reousrces EKS 클러스터를 위한 IAM 역할과 정책
-# ################################################################################
-# resource "aws_iam_role" "eks_cluster_role" {
-#   name = "eks_cluster_role"
-
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17",
-#     Statement = [
-#       {
-#         Effect = "Allow",
-#         Principal = {
-#           Service = "eks.amazonaws.com",
-#         },
-#         Action = "sts:AssumeRole",
-#       },
-#     ],
-#   })
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
-#   role       = aws_iam_role.eks_cluster_role.id
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSServicePolicy" {
-#   role       = aws_iam_role.eks_cluster_role.id
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
-# }
-
-
-# ################################################################################
-# # EKS Reousrces EKS 클러스터
-# ################################################################################
-
-# resource "aws_eks_cluster" "eks_cluster" {
-#   name     = "amz_mall_dev_eks_cluster"
-#   role_arn = aws_iam_role.eks_cluster_role.arn
-
-#   version = "1.28"
-
-#   vpc_config {
-#     subnet_ids = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
-#     endpoint_public_access  = true
-#   }
-
-#   encryption_config {
-#     provider {
-#       key_arn = aws_kms_key.eks.arn
-#     }
-#     resources = ["secrets"]
-#   }
-
-#   depends_on = [
-#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
-#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSServicePolicy,
-#   ]
-# }
-# ################################################################################
-# # EKS Reousrces EKS 노드 그룹
-# ################################################################################
-
-# resource "aws_iam_role" "eks_node_role" {
-#   name = "eks_node_role"
-
-#   assume_role_policy = jsonencode({
-#     Version = "2012-10-17",
-#     Statement = [
-#       {
-#         Effect = "Allow",
-#         Principal = {
-#           Service = "ec2.amazonaws.com",
-#         },
-#         Action = "sts:AssumeRole",
-#       },
-#     ],
-#   })
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-#   role       = aws_iam_role.eks_node_role.id
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-# }
-
-# resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
-#   role       = aws_iam_role.eks_node_role.id
-#   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-# }
-# ################################################################################
-# # EKS Reousrces EKS 노드 그룹 리소스
-# ################################################################################
-# resource "aws_eks_node_group" "service_node_group" {
-#   cluster_name    = aws_eks_cluster.eks_cluster.name
-#   node_group_name = "service_node_group"
-#   node_role_arn   = aws_iam_role.eks_node_role.arn
-#   subnet_ids      = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
-
-#   scaling_config {
-#     desired_size = 2
-#     max_size     = 4
-#     min_size     = 2
-#   }
-
-#   instance_types = ["t3.medium"]
-# }
-
-# resource "aws_eks_node_group" "eco_system_node_group" {
-#   cluster_name    = aws_eks_cluster.eks_cluster.name
-#   node_group_name = "eco_system_node_group"
-#   node_role_arn   = aws_iam_role.eks_node_role.arn
-#   subnet_ids      = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
-
-#   scaling_config {
-#     desired_size = 1
-#     max_size     = 1
-#     min_size     = 1
-#   }
-
-#   instance_types = ["t3.medium"]
-# }
-
-
-
-# ################################################################################
-# # AWS Auth ConfigMap 관리
-# ################################################################################
-
-# resource "kubernetes_config_map" "aws_auth" {
-#   depends_on = [aws_eks_node_group.service_node_group, aws_eks_node_group.eco_system_node_group]
-#   metadata {
-#     name      = "aws-auth"
-#     namespace = "kube-system"
-#   }
-
-#   data = {
-#     mapRoles = yamlencode([
-#       {
-#         rolearn  = aws_iam_role.eks_node_role.arn
-#         username = "system:node:{{EC2PrivateDNSName}}"
-#         groups   = ["system:bootstrappers", "system:nodes"]
-#       },
-#       {
-#         rolearn  = "arn:aws:iam::009946608368:role/AdditionalRole"
-#         username = "additionalRole"
-#         groups   = ["system:masters"]
-#       }
-#     ])
-#     mapUsers = yamlencode([
-#       {
-#         userarn  = "arn:aws:iam::009946608368:user/DOHYUNG"
-#         username = "DOHYUNG"
-#         groups   = ["system:masters"]
-#       },
-#       {
-#         userarn  = "arn:aws:iam::009946608368:user/DOHYUNG2"
-#         username = "DOHYUNG2"
-#         groups   = ["system:masters"]
-#       },
-#       {
-#         userarn  = "arn:aws:iam::009946608368:user/JUNYONG"
-#         username = "JUNYONG"
-#         groups   = ["system:masters"]
-#       }
-#     ])
-#   }
-# }
-
-
-# resource "aws_kms_key" "eks" {
-#   description             = "KMS key for EKS encryption"
-#   enable_key_rotation     = true
-#   deletion_window_in_days = 10
-# }
-
-# resource "aws_security_group" "eks_cluster_sg" {
-#   name        = "eks-cluster-sg"
-#   description = "Security group for EKS cluster"
-#   vpc_id      = aws_vpc.amz_mall_vpc.id
-
-#   ingress {
-#     from_port   = 1025
-#     to_port     = 65535
-#     protocol    = "tcp"
-#     self        = true
-#     description = "Nodes on ephemeral ports"
-#   }
-
-#   ingress {
-#     from_port   = 22
-#     to_port     = 22
-#     protocol    = "tcp"
-#     security_groups = [aws_security_group.additional.id]
-#     description = "Ingress from another computed security group"
-#   }
-
-#   egress {
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-# }
-# resource "aws_eks_addon" "kube_proxy" {
-#   cluster_name  = aws_eks_cluster.eks_cluster.name
-#   addon_name    = "kube-proxy"
-#   addon_version = "v1.28.4-minimal-eksbuild.1"
-# }
-
-# resource "aws_eks_addon" "coredns" {
-#   cluster_name  = aws_eks_cluster.eks_cluster.name
-#   addon_name    = "coredns"
-#   addon_version = "v1.10.1-eksbuild.6"
-# }
-
-# resource "aws_eks_addon" "vpc_cni" {
-#   cluster_name  = aws_eks_cluster.eks_cluster.name
-#   addon_name    = "vpc-cni"
-#   addon_version = "v1.16.0-eksbuild.1"
-# }
-
-# resource "aws_eks_addon" "pod_identity_webhook" {
-#   cluster_name  = aws_eks_cluster.eks_cluster.name
-#   addon_name    = "vpc-cni" 
-#   addon_version = "v1.10.1-eksbuild.1" # 적절한 버전을 지정합니다.
-# }
