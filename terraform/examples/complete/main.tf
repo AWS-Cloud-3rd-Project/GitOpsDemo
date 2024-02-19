@@ -454,6 +454,39 @@ resource "kubernetes_service_account" "aws-load-balancer-controller" {
 
   depends_on = [module.load_balancer_controller_irsa_role]
 }
+resource "aws_security_group" "alb_sg" {
+  name        = "amzmall-alb-security-group"
+  description = "Security group for ALB to allow inbound traffic on HTTP and HTTPS"
+  vpc_id      = aws_vpc.amz_mall_vpc.id
+
+  # HTTP 접근 허용
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # HTTPS 접근 허용
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # 모든 아웃바운드 트래픽 허용
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "alb-security-group"
+  }
+}
 
 ################################################################################
 # EKS Module
